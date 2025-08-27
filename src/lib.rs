@@ -14,7 +14,6 @@
 //!     such as actors, threads and the network
 
 #![warn(missing_docs)]
-#![feature(specialization)]
 
 extern crate simple_allocator_trait;
 mod pointer_to_maybe_compact;

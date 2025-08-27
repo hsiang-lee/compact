@@ -128,90 +128,85 @@ impl<K, V> Default for Entry<K, V> {
 }
 
 impl<K: Copy, V: Compact> Compact for Entry<K, V> {
-    default fn is_still_compact(&self) -> bool {
-        if self.tombstoned {
+    fn is_still_compact(&self) -> bool {
+        if std::mem::needs_drop::<V>() {
+            if self.tombstoned {
+                true
+            } else {
+                self.inner
+                    .as_ref()
+                    .map_or(true, |kv_tuple| kv_tuple.1.is_still_compact())
+            }
+        } else {
             true
-        } else {
-            self.inner
-                .as_ref()
-                .map_or(true, |kv_tuple| kv_tuple.1.is_still_compact())
         }
     }
 
-    default fn dynamic_size_bytes(&self) -> usize {
-        if self.tombstoned {
+    fn dynamic_size_bytes(&self) -> usize {
+        if std::mem::needs_drop::<V>() {
+            if self.tombstoned {
+                0
+            } else {
+                self.inner
+                    .as_ref()
+                    .map_or(0, |kv_tuple| kv_tuple.1.dynamic_size_bytes())
+            }
+        } else {
             0
-        } else {
-            self.inner
-                .as_ref()
-                .map_or(0, |kv_tuple| kv_tuple.1.dynamic_size_bytes())
         }
     }
 
-    default unsafe fn compact(source: *mut Self, dest: *mut Self, new_dynamic_part: *mut u8) {
+    unsafe fn compact(source: *mut Self, dest: *mut Self, new_dynamic_part: *mut u8) {
         (*dest).hash = (*source).hash;
         (*dest).tombstoned = (*source).tombstoned;
-        ::std::ptr::copy_nonoverlapping(&(*source).inner, &mut (*dest).inner, 1);
-        if (*dest).inner.is_some() {
-            Compact::compact(
-                &mut (*source).inner.as_mut().unwrap().1,
-                &mut (*dest).inner.as_mut().unwrap().1,
-                new_dynamic_part,
-            )
+
+        if std::mem::needs_drop::<V>() {
+            ::std::ptr::copy_nonoverlapping(&(*source).inner, &mut (*dest).inner, 1);
+            if (*dest).inner.is_some() {
+                Compact::compact(
+                    &mut (*source).inner.as_mut().unwrap().1,
+                    &mut (*dest).inner.as_mut().unwrap().1,
+                    new_dynamic_part,
+                )
+            }
+        } else {
+            (*dest).inner = std::ptr::read(&(*source).inner);
         }
     }
 
-    default unsafe fn decompact(source: *const Self) -> Entry<K, V> {
+    unsafe fn decompact(source: *const Self) -> Entry<K, V> {
         if (*source).inner.is_none() {
             Entry {
                 hash: (*source).hash,
                 tombstoned: (*source).tombstoned,
                 inner: None,
             }
-        } else {
+        } else if std::mem::needs_drop::<V>() {
             let insides = (*source).inner.as_ref().unwrap();
             Entry {
                 hash: (*source).hash,
                 tombstoned: (*source).tombstoned,
                 inner: Some((insides.0, (Compact::decompact(&insides.1)))),
             }
-        }
-    }
-}
-
-impl<K: Copy, V: Copy> Compact for Entry<K, V> {
-    fn is_still_compact(&self) -> bool {
-        true
-    }
-
-    fn dynamic_size_bytes(&self) -> usize {
-        0
-    }
-
-    unsafe fn compact(source: *mut Self, dest: *mut Self, _new_dynamic_part: *mut u8) {
-        (*dest).hash = (*source).hash;
-        (*dest).tombstoned = (*source).tombstoned;
-        (*dest).inner = (*source).inner;
-    }
-
-    unsafe fn decompact(source: *const Self) -> Entry<K, V> {
-        Entry {
-            hash: (*source).hash,
-            tombstoned: (*source).tombstoned,
-            inner: (*source).inner,
+        } else {
+            Entry {
+                hash: (*source).hash,
+                tombstoned: (*source).tombstoned,
+                inner: std::ptr::read(&(*source).inner),
+            }
         }
     }
 }
 
 lazy_static! {
-    static ref PRIME_SIEVE: primal::Sieve = { primal::Sieve::new(1_000_000) };
+    static ref PRIME_SIEVE: primal::Sieve = primal::Sieve::new(1_000_000);
 }
 
 impl<'a, K: Copy, V: Compact, A: Allocator> QuadraticProbingIterator<'a, K, V, A> {
     fn for_map(
         map: &'a OpenAddressingMap<K, V, A>,
         hash: u32,
-    ) -> QuadraticProbingIterator<K, V, A> {
+    ) -> QuadraticProbingIterator<'a, K, V, A> {
         QuadraticProbingIterator {
             i: 0,
             number_used: map.entries.capacity(),
@@ -225,7 +220,7 @@ impl<'a, K: Copy, V: Compact, A: Allocator> QuadraticProbingMutIterator<'a, K, V
     fn for_map(
         map: &'a mut OpenAddressingMap<K, V, A>,
         hash: u32,
-    ) -> QuadraticProbingMutIterator<K, V, A> {
+    ) -> QuadraticProbingMutIterator<'a, K, V, A> {
         QuadraticProbingMutIterator {
             i: 0,
             number_used: map.entries.capacity(),
@@ -454,11 +449,11 @@ impl<K: Copy + Eq + Hash, V: Compact, A: Allocator> OpenAddressingMap<K, V, A> {
         None
     }
 
-    fn quadratic_iterator(&self, query: K) -> QuadraticProbingIterator<K, V, A> {
+    fn quadratic_iterator(&self, query: K) -> QuadraticProbingIterator<'_, K, V, A> {
         QuadraticProbingIterator::for_map(self, Self::hash(query))
     }
 
-    fn quadratic_iterator_mut(&mut self, hash: u32) -> QuadraticProbingMutIterator<K, V, A> {
+    fn quadratic_iterator_mut(&mut self, hash: u32) -> QuadraticProbingMutIterator<'_, K, V, A> {
         QuadraticProbingMutIterator::for_map(self, hash)
     }
 
@@ -482,15 +477,15 @@ impl<K: Copy + Eq + Hash, V: Compact, A: Allocator> OpenAddressingMap<K, V, A> {
 }
 
 impl<K: Copy + Eq + Hash, V: Compact, A: Allocator> Compact for OpenAddressingMap<K, V, A> {
-    default fn is_still_compact(&self) -> bool {
+    fn is_still_compact(&self) -> bool {
         self.entries.is_still_compact()
     }
 
-    default fn dynamic_size_bytes(&self) -> usize {
+    fn dynamic_size_bytes(&self) -> usize {
         self.entries.dynamic_size_bytes()
     }
 
-    default unsafe fn compact(source: *mut Self, dest: *mut Self, new_dynamic_part: *mut u8) {
+    unsafe fn compact(source: *mut Self, dest: *mut Self, new_dynamic_part: *mut u8) {
         (*dest).number_alive = (*source).number_alive;
         (*dest).number_used = (*source).number_used;
         Compact::compact(
@@ -747,7 +742,8 @@ fn iter() {
             keys.find(|&i| {
                 println!("find {:?} {:?}", i, n);
                 *i == n
-            }).is_some(),
+            })
+            .is_some(),
             "fail n {:?} ",
             n
         );
@@ -878,13 +874,12 @@ fn compact_notcopy() {
 
     let mut map: NestedType = OpenAddressingMap::new();
     let assert_fun = |map: &NestedType, t: usize| {
-        assert!(
-            map.get(t)
-                .unwrap()
-                .into_iter()
-                .find(|i| **i == elem(t))
-                .is_some()
-        )
+        assert!(map
+            .get(t)
+            .unwrap()
+            .into_iter()
+            .find(|i| **i == elem(t))
+            .is_some())
     };
 
     for n in 0..1000 {

@@ -1,10 +1,10 @@
-use super::simple_allocator_trait::{Allocator, DefaultHeap};
-use super::pointer_to_maybe_compact::PointerToMaybeCompact;
 use super::compact::Compact;
-use std::marker::PhantomData;
-use std::ptr;
-use std::ops::{Deref, DerefMut};
+use super::pointer_to_maybe_compact::PointerToMaybeCompact;
+use super::simple_allocator_trait::{Allocator, DefaultHeap};
 use std::iter::FromIterator;
+use std::marker::PhantomData;
+use std::ops::{Deref, DerefMut};
+use std::ptr;
 
 /// A dynamically-sized vector that can be stored in compact sequential storage and
 /// automatically spills over into free heap storage using `Allocator`.
@@ -370,67 +370,27 @@ impl<'a, T, A: Allocator> IntoIterator for &'a mut CompactVec<T, A> {
         self.iter_mut()
     }
 }
-
 impl<T: Compact + Clone, A: Allocator> Compact for CompactVec<T, A> {
-    default fn is_still_compact(&self) -> bool {
-        self.ptr.is_compact() && self.iter().all(|elem| elem.is_still_compact())
-    }
-
-    default fn dynamic_size_bytes(&self) -> usize {
-        self.cap as usize * ::std::mem::size_of::<T>()
-            + self
-                .iter()
-                .map(|elem| elem.dynamic_size_bytes())
-                .sum::<usize>()
-    }
-
-    default unsafe fn compact(source: *mut Self, dest: *mut Self, new_dynamic_part: *mut u8) {
-        (*dest).len = (*source).len;
-        (*dest).cap = (*source).cap;
-        (*dest).ptr.set_to_compact(new_dynamic_part as *mut T);
-
-        let mut offset = (*source).cap as usize * ::std::mem::size_of::<T>();
-
-        for (i, item) in (*source).iter_mut().enumerate() {
-            let size_of_this_item = item.dynamic_size_bytes();
-            Compact::compact(
-                item,
-                &mut (*dest)[i],
-                new_dynamic_part.offset(offset as isize),
-            );
-            offset += size_of_this_item;
-        }
-
-        // we want to free any allocated space,
-        // but not semantically drop our contents (they just moved)
-        (*source).ptr.deallocate_if_free::<A>((*source).cap as usize);
-    }
-
-    default unsafe fn decompact(source: *const Self) -> Self {
-        if (*source).ptr.is_compact() {
-            (*source)
-                .iter()
-                .map(|item| Compact::decompact(item))
-                .collect()
-        } else {
-            CompactVec {
-                ptr: ptr::read(&(*source).ptr as *const PointerToMaybeCompact<T>),
-                len: (*source).len,
-                cap: (*source).cap,
-                _alloc: (*source)._alloc,
-            }
-            // caller has to make sure that self will not be dropped!
-        }
-    }
-}
-
-impl<T: Copy, A: Allocator> Compact for CompactVec<T, A> {
     fn is_still_compact(&self) -> bool {
-        self.ptr.is_compact()
+        if std::mem::needs_drop::<T>() {
+            self.ptr.is_compact() && self.iter().all(|elem| elem.is_still_compact())
+        } else {
+            self.ptr.is_compact()
+        }
     }
 
     fn dynamic_size_bytes(&self) -> usize {
-        self.cap as usize * ::std::mem::size_of::<T>()
+        let base_size = self.cap as usize * ::std::mem::size_of::<T>();
+
+        if std::mem::needs_drop::<T>() {
+            base_size
+                + self
+                    .iter()
+                    .map(|elem| elem.dynamic_size_bytes())
+                    .sum::<usize>()
+        } else {
+            base_size
+        }
     }
 
     unsafe fn compact(source: *mut Self, dest: *mut Self, new_dynamic_part: *mut u8) {
@@ -438,32 +398,73 @@ impl<T: Copy, A: Allocator> Compact for CompactVec<T, A> {
         (*dest).cap = (*source).cap;
         (*dest).ptr.set_to_compact(new_dynamic_part as *mut T);
 
-        ptr::copy_nonoverlapping(
-            (*source).ptr.ptr(),
-            new_dynamic_part as *mut T,
-            (*source).len(),
-        );
+        if std::mem::needs_drop::<T>() {
+            let mut offset = (*source).cap as usize * ::std::mem::size_of::<T>();
 
-        // we want to free any allocated space,
-        // but not semantically drop our contents (they just moved)
-        (*source).ptr.deallocate_if_free::<A>((*source).cap as usize);
+            for (i, item) in (*source).iter_mut().enumerate() {
+                let size_of_this_item = item.dynamic_size_bytes();
+                Compact::compact(
+                    item,
+                    &mut (&mut *dest)[i],
+                    new_dynamic_part.offset(offset as isize),
+                );
+                offset += size_of_this_item;
+            }
+        } else {
+            ptr::copy_nonoverlapping(
+                (*source).ptr.ptr(),
+                new_dynamic_part as *mut T,
+                (*source).len(),
+            );
+        }
+
+        (*source)
+            .ptr
+            .deallocate_if_free::<A>((*source).cap as usize);
+    }
+
+    unsafe fn decompact(source: *const Self) -> Self {
+        if (*source).ptr.is_compact() {
+            if std::mem::needs_drop::<T>() {
+                (*source)
+                    .iter()
+                    .map(|item| Compact::decompact(item))
+                    .collect()
+            } else {
+                CompactVec {
+                    ptr: ptr::read(&(*source).ptr as *const PointerToMaybeCompact<T>),
+                    len: (*source).len,
+                    cap: (*source).cap,
+                    _alloc: (*source)._alloc,
+                }
+            }
+        } else {
+            CompactVec {
+                ptr: ptr::read(&(*source).ptr as *const PointerToMaybeCompact<T>),
+                len: (*source).len,
+                cap: (*source).cap,
+                _alloc: (*source)._alloc,
+            }
+        }
     }
 }
 
 impl<T: Compact + Clone, A: Allocator> Clone for CompactVec<T, A> {
-    default fn clone(&self) -> CompactVec<T, A> {
-        self.iter().cloned().collect::<Vec<_>>().into()
-    }
-}
-
-impl<T: Copy, A: Allocator> Clone for CompactVec<T, A> {
     fn clone(&self) -> CompactVec<T, A> {
-        let mut new_vec = Self::with_capacity(self.cap as usize);
-        unsafe {
-            ptr::copy_nonoverlapping(self.ptr.ptr(), new_vec.ptr.mut_ptr(), self.len as usize);
+        if std::mem::needs_drop::<T>() {
+            self.iter().cloned().collect::<Vec<_>>().into()
+        } else {
+            let mut new_vec = Self::with_capacity(self.cap as usize);
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    self.ptr.ptr(),
+                    new_vec.ptr.mut_ptr(),
+                    self.len as usize,
+                );
+            }
+            new_vec.len = self.len;
+            new_vec
         }
-        new_vec.len = self.len;
-        new_vec
     }
 }
 
@@ -499,13 +500,13 @@ impl<T: Compact + ::std::fmt::Debug, A: Allocator> ::std::fmt::Debug for Compact
 }
 
 #[cfg(feature = "serde-serialization")]
-use ::serde::ser::SerializeSeq;
+use serde::ser::SerializeSeq;
 
 #[cfg(feature = "serde-serialization")]
 impl<T, A> ::serde::ser::Serialize for CompactVec<T, A>
 where
     T: Compact + ::serde::ser::Serialize,
-    A: Allocator
+    A: Allocator,
 {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -521,14 +522,14 @@ where
 
 #[cfg(feature = "serde-serialization")]
 struct CompactVecVisitor<T, A: Allocator> {
-    marker: PhantomData<fn() -> CompactVec<T, A>>
+    marker: PhantomData<fn() -> CompactVec<T, A>>,
 }
 
 #[cfg(feature = "serde-serialization")]
 impl<T, A: Allocator> CompactVecVisitor<T, A> {
     fn new() -> Self {
         CompactVecVisitor {
-            marker: PhantomData
+            marker: PhantomData,
         }
     }
 }
@@ -537,7 +538,7 @@ impl<T, A: Allocator> CompactVecVisitor<T, A> {
 impl<'de, T, A> ::serde::de::Visitor<'de> for CompactVecVisitor<T, A>
 where
     T: Compact + ::serde::de::Deserialize<'de>,
-    A: Allocator
+    A: Allocator,
 {
     type Value = CompactVec<T, A>;
 
@@ -563,7 +564,7 @@ where
 impl<'de, T, A> ::serde::de::Deserialize<'de> for CompactVec<T, A>
 where
     T: Compact + ::serde::de::Deserialize<'de>,
-    A: Allocator
+    A: Allocator,
 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

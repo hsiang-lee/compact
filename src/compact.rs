@@ -45,17 +45,17 @@ pub trait Compact: Sized + Clone {
 
 /// Trivial implementation for fixed-sized, `Copy` types (no dynamic part)
 impl<T: Copy> Compact for T {
-    default fn is_still_compact(&self) -> bool {
+    fn is_still_compact(&self) -> bool {
         true
     }
-    default fn dynamic_size_bytes(&self) -> usize {
+    fn dynamic_size_bytes(&self) -> usize {
         0
     }
-    default unsafe fn compact(source: *mut Self, dest: *mut Self, _new_dynamic_part: *mut u8) {
+    unsafe fn compact(source: *mut Self, dest: *mut Self, _new_dynamic_part: *mut u8) {
         *dest = *source
     }
 
-    default unsafe fn decompact(source: *const Self) -> Self {
+    unsafe fn decompact(source: *const Self) -> Self {
         *source
     }
 }

@@ -123,17 +123,17 @@ impl<K: Eq + Copy, V: Compact + Clone, A: Allocator> CompactDict<K, V, A> {
     }
 
     /// Iterator over all keys in the dictionary
-    pub fn keys(&self) -> ::std::slice::Iter<K> {
+    pub fn keys(&self) -> ::std::slice::Iter<'_, K> {
         self.keys.iter()
     }
 
     /// Iterator over all values in the dictionary
-    pub fn values(&self) -> ::std::slice::Iter<V> {
+    pub fn values(&self) -> ::std::slice::Iter<'_, V> {
         self.values.iter()
     }
 
     /// Iterator over mutable references to all values in the dictionary
-    pub fn values_mut(&mut self) -> ::std::slice::IterMut<V> {
+    pub fn values_mut(&mut self) -> ::std::slice::IterMut<'_, V> {
         self.values.iter_mut()
     }
 
