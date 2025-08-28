@@ -1,4 +1,5 @@
 use std::mem;
+use std::ptr;
 
 /// A trait for objects with a statically-sized part and a potential dynamically-sized part
 /// that can be stored both compactly in consecutive memory or freely on the heap
@@ -52,10 +53,10 @@ impl<T: Copy> Compact for T {
         0
     }
     unsafe fn compact(source: *mut Self, dest: *mut Self, _new_dynamic_part: *mut u8) {
-        *dest = *source
+        ptr::write_unaligned(dest, *source);
     }
 
     unsafe fn decompact(source: *const Self) -> Self {
-        *source
+        ptr::read_unaligned(source)
     }
 }
